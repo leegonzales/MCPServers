@@ -6,7 +6,12 @@
       "Bash(gh repo create:*)",
       "Bash(git remote add:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "mcp__plugin_beads_beads__debug_env",
+      "mcp__plugin_beads_beads__init",
+      "mcp__plugin_beads_beads__create",
+      "mcp__plugin_beads_beads__stats"
     ],
     "deny": [],
     "ask": []
