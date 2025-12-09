@@ -1,0 +1,19 @@
+{
+  "name": "mcp-servers",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Personal collection of MCP servers",
+  "workspaces": [
+    "nanobanana-mcp"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "clean": "rm -rf node_modules */node_modules */dist"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leegonzales/MCPServers.git"
+  },
+  "author": "Lee Gonzales",
+  "license": "MIT"
+}
