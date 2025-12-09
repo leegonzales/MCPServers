@@ -23,6 +23,15 @@
   ],
   "author": "Lee Gonzales",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leegonzales/MCPServers.git",
+    "directory": "nanobanana-mcp"
+  },
+  "homepage": "https://github.com/leegonzales/MCPServers/tree/main/nanobanana-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/leegonzales/MCPServers/issues"
+  },
   "dependencies": {
     "@google/genai": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
