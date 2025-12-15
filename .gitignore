@@ -27,6 +27,9 @@ npm-debug.log*
 # Test coverage
 coverage/
 
+# Claude Code local settings (may contain API keys)
+.claude/settings.local.json
+
 # Package locks (keep package-lock.json, ignore others)
 yarn.lock
 pnpm-lock.yaml
