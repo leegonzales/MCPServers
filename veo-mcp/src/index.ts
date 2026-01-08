@@ -141,28 +141,17 @@ async function downloadAndSaveVideo(
     const filePath = path.join(OUTPUT_DIR, filename);
 
     try {
-        // Add API key as query param for googleapis.com endpoints
         const downloadUrl = new URL(videoUri);
         const apiKey = process.env.GEMINI_API_KEY;
-        if (apiKey && downloadUrl.hostname.includes("googleapis.com")) {
-            downloadUrl.searchParams.set("key", apiKey);
-        }
 
+        // Use header auth to avoid exposing API key in URL/logs
         console.error(`Downloading video from ${downloadUrl.hostname}...`);
-        const response = await fetch(downloadUrl.toString());
+        const response = await fetch(downloadUrl.toString(), {
+            headers: apiKey ? { "x-goog-api-key": apiKey } : {},
+        });
 
         if (!response.ok) {
-            // Try with header auth as fallback
-            console.error(`Query param auth failed (${response.status}), trying header...`);
-            const response2 = await fetch(videoUri, {
-                headers: { "x-goog-api-key": apiKey || "" },
-            });
-            if (!response2.ok) {
-                throw new Error(`Failed to download video: ${response2.statusText}`);
-            }
-            const buffer = Buffer.from(await response2.arrayBuffer());
-            fs.writeFileSync(filePath, buffer);
-            return filePath;
+            throw new Error(`Failed to download video: ${response.status} ${response.statusText}`);
         }
 
         const buffer = Buffer.from(await response.arrayBuffer());
@@ -887,6 +876,22 @@ server.tool(
                     };
                 }
 
+                // Check for RAI filtering (content policy)
+                if (
+                    currentOp.response?.raiMediaFilteredCount &&
+                    currentOp.response.raiMediaFilteredCount > 0
+                ) {
+                    return {
+                        content: [
+                            {
+                                type: "text" as const,
+                                text: `Operation completed but video was filtered by content policy.\n\nReasons: ${currentOp.response.raiMediaFilteredReasons?.join(", ") || "Safety Policy"}\nElapsed: ${elapsed}s\n\nTry rephrasing your prompt.`,
+                            },
+                        ],
+                        isError: true,
+                    };
+                }
+
                 const videoUri =
                     currentOp.response?.generatedVideos?.[0]?.video?.uri;
                 if (videoUri) {
@@ -919,6 +924,17 @@ server.tool(
                         ],
                     };
                 }
+
+                // Fallback: operation done but no video output
+                return {
+                    content: [
+                        {
+                            type: "text" as const,
+                            text: `Operation completed with no video output.\n\nElapsed: ${elapsed}s\nPrompt: ${pending.prompt}`,
+                        },
+                    ],
+                    isError: true,
+                };
             }
 
             return {
