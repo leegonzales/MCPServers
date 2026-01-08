@@ -27,8 +27,11 @@ npm-debug.log*
 # Test coverage
 coverage/
 
-# Claude Code local settings (may contain API keys)
-.claude/settings.local.json
+# Claude Code local config (may contain API keys)
+.claude/
+
+# Beads issue tracker (local database)
+.beads/
 
 # Package locks (keep package-lock.json, ignore others)
 yarn.lock
