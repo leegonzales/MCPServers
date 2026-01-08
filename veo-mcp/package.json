@@ -1,0 +1,40 @@
+{
+  "name": "veo-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for AI video generation using Google Veo 3.1",
+  "main": "dist/index.js",
+  "bin": {
+    "veo-mcp": "dist/index.js"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build",
+    "test": "node --test tests/e2e/*.test.js",
+    "test:e2e": "node --test --test-timeout=600000 tests/e2e/",
+    "test:single": "node --test --test-name-pattern"
+  },
+  "keywords": ["mcp", "model-context-protocol", "veo", "gemini", "video-generation", "ai", "claude"],
+  "author": "Lee Gonzales",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/leegonzales/MCPServers.git",
+    "directory": "veo-mcp"
+  },
+  "dependencies": {
+    "@google/genai": "^1.0.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": ["dist", "README.md"]
+}
