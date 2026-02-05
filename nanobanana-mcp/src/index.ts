@@ -52,15 +52,15 @@ function loadManifest(): GeneratedImage[] {
 }
 
 // Save entire manifest to disk
-function saveManifest(manifest: GeneratedImage[]): void {
+async function saveManifest(manifest: GeneratedImage[]): Promise<void> {
     ensureOutputDir();
-    fs.writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
+    await fs.promises.writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
 }
 
 // Append a single image to the manifest
-function appendToManifest(image: GeneratedImage): void {
+async function appendToManifest(image: GeneratedImage): Promise<void> {
     persistentManifest.push(image);
-    saveManifest(persistentManifest);
+    await saveManifest(persistentManifest);
 }
 
 // Extract ID from filename (e.g., "generated-2024-12-13T20-12-45-123Z-a4b5c6.png" -> "generated-2024-12-13T20-12-45-123Z-a4b5c6")
@@ -256,7 +256,7 @@ server.tool(
                         };
                         sessionHistory.push(imageRecord);
                         lastGeneratedImage = imageRecord;
-                        appendToManifest(imageRecord);
+                        await appendToManifest(imageRecord);
                     }
                 }
             }
@@ -372,7 +372,7 @@ server.tool(
                         };
                         sessionHistory.push(imageRecord);
                         lastGeneratedImage = imageRecord;
-                        appendToManifest(imageRecord);
+                        await appendToManifest(imageRecord);
                     }
                 }
             }
@@ -492,7 +492,7 @@ server.tool(
                         };
                         sessionHistory.push(imageRecord);
                         lastGeneratedImage = imageRecord;
-                        appendToManifest(imageRecord);
+                        await appendToManifest(imageRecord);
                     }
                 }
             }
@@ -613,13 +613,35 @@ server.tool(
             );
         }
 
-        // Filter by date range
+        // Filter by date range (with validation)
         if (startDate) {
             const start = new Date(startDate);
+            if (isNaN(start.getTime())) {
+                return {
+                    content: [
+                        {
+                            type: "text" as const,
+                            text: `Invalid startDate format: ${startDate}. Please use ISO format (e.g., 2024-12-01).`,
+                        },
+                    ],
+                    isError: true,
+                };
+            }
             results = results.filter((img) => new Date(img.timestamp) >= start);
         }
         if (endDate) {
             const end = new Date(endDate);
+            if (isNaN(end.getTime())) {
+                return {
+                    content: [
+                        {
+                            type: "text" as const,
+                            text: `Invalid endDate format: ${endDate}. Please use ISO format (e.g., 2024-12-31).`,
+                        },
+                    ],
+                    isError: true,
+                };
+            }
             results = results.filter((img) => new Date(img.timestamp) <= end);
         }
 
@@ -628,8 +650,8 @@ server.tool(
             results = results.filter((img) => img.type === type);
         }
 
-        // Sort by timestamp descending (newest first)
-        results.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        // Sort by timestamp descending (newest first) - ISO strings sort lexicographically
+        results.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 
         // Limit results
         const limited = results.slice(0, limit);
@@ -698,13 +720,16 @@ server.tool(
         // Check if file still exists
         const fileExists = fs.existsSync(image.path);
 
-        // Build lineage chain
+        // Build lineage chain (using Map for O(1) lookups)
         const lineage: string[] = [];
         let currentId: string | undefined = image.editedFrom;
-        while (currentId) {
-            lineage.push(currentId);
-            const parent = persistentManifest.find((img) => img.id === currentId);
-            currentId = parent?.editedFrom;
+        if (currentId) {
+            const imageMap = new Map(persistentManifest.map((img) => [img.id, img]));
+            while (currentId) {
+                lineage.push(currentId);
+                const parent = imageMap.get(currentId);
+                currentId = parent?.editedFrom;
+            }
         }
 
         // Find children (images edited from this one)
