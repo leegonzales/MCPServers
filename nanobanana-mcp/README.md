@@ -7,7 +7,9 @@ MCP server for AI image generation using Google Gemini's native image generation
 - **Text-to-Image Generation** - Create images from detailed text prompts
 - **Image Editing** - Modify existing images with natural language instructions
 - **Iterative Refinement** - Continue editing the last generated image
-- **Session History** - Track all generated images in a session
+- **Persistent History** - All prompts and metadata saved to `manifest.json` across sessions
+- **Search & Retrieval** - Find past images by prompt, date, model, or ID
+- **Edit Lineage Tracking** - Track parent-child relationships across edits
 
 ## Prerequisites
 
@@ -84,7 +86,45 @@ Make the lighting warmer and add more detail to the background
 
 ### `get_image_history`
 
-List all images generated in the current session.
+List all images generated in the current session. Shows session count and total persistent manifest count.
+
+### `search_history`
+
+Search all generated images across sessions.
+
+**Parameters:**
+- `query` (optional) - Text to search for in prompts (case-insensitive)
+- `id` (optional) - Search for a specific image ID (partial match)
+- `model` (optional) - Filter by model name
+- `startDate` (optional) - Filter images after this date (ISO format, e.g., 2024-12-01)
+- `endDate` (optional) - Filter images before this date
+- `type` (optional) - Filter by type: `generation`, `edit`, or `continue_edit`
+- `limit` (optional) - Maximum results (default: 20)
+
+**Examples:**
+```
+# Find all sunset images
+search_history(query="sunset")
+
+# Find images from December 2024
+search_history(startDate="2024-12-01", endDate="2024-12-31")
+
+# Find edited images only
+search_history(type="edit", limit=10)
+```
+
+### `get_image_by_id`
+
+Get full details for a specific image including edit lineage.
+
+**Parameters:**
+- `imageId` (required) - The image ID to look up (partial match supported)
+
+**Returns:**
+- Full prompt used
+- All generation settings (model, aspectRatio, imageSize)
+- Edit lineage (ancestors and children)
+- File existence check
 
 ## Output
 
@@ -93,7 +133,27 @@ Generated images are saved to:
 ~/Documents/nanobanana_generated/
 ```
 
-Filename format: `generated-{timestamp}-{id}.png`
+**Files:**
+- `generated-{timestamp}-{id}.png` - Image files
+- `manifest.json` - Persistent metadata for all images
+
+**Manifest entry structure:**
+```json
+{
+  "id": "generated-2024-12-13T20-12-45-123Z-a4b5c6",
+  "prompt": "A futuristic city at sunset",
+  "path": "/Users/.../generated-2024-12-13T20-12-45-123Z-a4b5c6.png",
+  "timestamp": "2024-12-13T20:12:45.123Z",
+  "model": "gemini-3-pro-image-preview",
+  "aspectRatio": "16:9",
+  "imageSize": "4K",
+  "type": "generation",
+  "editedFrom": null,
+  "sourceImagePath": null
+}
+```
+
+For edited images, `editedFrom` contains the parent image ID and `sourceImagePath` contains the original image path.
 
 ## Prompting Tips
 
@@ -117,6 +177,7 @@ Filename format: `generated-{timestamp}-{id}.png`
 
 | Model | Speed | Best For |
 |-------|-------|----------|
+| `gemini-3-pro-image-preview` | Slower | **Default.** Highest quality, 4K output, best text rendering |
 | `gemini-2.0-flash-exp` | Fast | Most use cases, iteration |
 | `gemini-2.0-flash-preview-image-generation` | Medium | Higher quality output |
 
