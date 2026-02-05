@@ -69,7 +69,7 @@ function extractIdFromFilename(filename: string): string {
 }
 
 // Scan existing images and create manifest entries for those not already tracked
-function scanExistingImages(): void {
+async function scanExistingImages(): Promise<void> {
     ensureOutputDir();
     const existingIds = new Set(persistentManifest.map((img) => img.id));
 
@@ -100,7 +100,7 @@ function scanExistingImages(): void {
 
     // Save if we added any new entries
     if (persistentManifest.length > existingIds.size) {
-        saveManifest(persistentManifest);
+        await saveManifest(persistentManifest);
         console.error(
             `Scanned ${persistentManifest.length - existingIds.size} pre-existing images into manifest`
         );
@@ -108,9 +108,9 @@ function scanExistingImages(): void {
 }
 
 // Initialize manifest on startup
-function initializeManifest(): void {
+async function initializeManifest(): Promise<void> {
     persistentManifest = loadManifest();
-    scanExistingImages();
+    await scanExistingImages();
     console.error(
         `Loaded manifest with ${persistentManifest.length} images`
     );
@@ -780,7 +780,7 @@ Type: ${image.type || "unknown"}`;
 // Start server
 async function main(): Promise<void> {
     // Initialize persistent manifest before starting server
-    initializeManifest();
+    await initializeManifest();
 
     const transport = new StdioServerTransport();
     await server.connect(transport);

@@ -97,7 +97,7 @@ Search all generated images across sessions.
 - `id` (optional) - Search for a specific image ID (partial match)
 - `model` (optional) - Filter by model name
 - `startDate` (optional) - Filter images after this date (ISO format, e.g., 2024-12-01)
-- `endDate` (optional) - Filter images before this date
+- `endDate` (optional) - Filter images before this date (ISO format, e.g., 2024-12-31)
 - `type` (optional) - Filter by type: `generation`, `edit`, or `continue_edit`
 - `limit` (optional) - Maximum results (default: 20)
 
