@@ -13,22 +13,107 @@ interface GeneratedImage {
     id: string;
     prompt: string;
     path: string;
-    timestamp: Date;
+    timestamp: string; // ISO format for JSON serialization
     model: string;
+    aspectRatio?: string;
+    imageSize?: string;
+    editedFrom?: string; // Parent image ID if this was an edit
+    sourceImagePath?: string; // For edits: original input image path
+    type: "generation" | "edit" | "continue_edit";
 }
 
 // Session state
-const imageHistory: GeneratedImage[] = [];
+const sessionHistory: GeneratedImage[] = []; // Current session only
 let lastGeneratedImage: GeneratedImage | null = null;
+let persistentManifest: GeneratedImage[] = []; // Loaded from disk
 
-// Output directory
+// Output directory and manifest
 const OUTPUT_DIR = path.join(os.homedir(), "Documents", "nanobanana_generated");
+const MANIFEST_PATH = path.join(OUTPUT_DIR, "manifest.json");
 
 // Ensure output directory exists
 function ensureOutputDir(): void {
     if (!fs.existsSync(OUTPUT_DIR)) {
         fs.mkdirSync(OUTPUT_DIR, { recursive: true });
     }
+}
+
+// Load manifest from disk
+function loadManifest(): GeneratedImage[] {
+    try {
+        if (fs.existsSync(MANIFEST_PATH)) {
+            const data = fs.readFileSync(MANIFEST_PATH, "utf-8");
+            return JSON.parse(data);
+        }
+    } catch (error) {
+        console.warn("Could not load manifest:", error);
+    }
+    return [];
+}
+
+// Save entire manifest to disk
+async function saveManifest(manifest: GeneratedImage[]): Promise<void> {
+    ensureOutputDir();
+    await fs.promises.writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
+}
+
+// Append a single image to the manifest
+async function appendToManifest(image: GeneratedImage): Promise<void> {
+    persistentManifest.push(image);
+    await saveManifest(persistentManifest);
+}
+
+// Extract ID from filename (e.g., "generated-2024-12-13T20-12-45-123Z-a4b5c6.png" -> "generated-2024-12-13T20-12-45-123Z-a4b5c6")
+function extractIdFromFilename(filename: string): string {
+    return path.basename(filename, path.extname(filename));
+}
+
+// Scan existing images and create manifest entries for those not already tracked
+async function scanExistingImages(): Promise<void> {
+    ensureOutputDir();
+    const existingIds = new Set(persistentManifest.map((img) => img.id));
+
+    const files = fs.readdirSync(OUTPUT_DIR);
+    const imageFiles = files.filter((f) =>
+        [".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(
+            path.extname(f).toLowerCase()
+        )
+    );
+
+    for (const file of imageFiles) {
+        const id = extractIdFromFilename(file);
+        if (!existingIds.has(id)) {
+            // Create a basic entry for untracked images
+            const filePath = path.join(OUTPUT_DIR, file);
+            const stats = fs.statSync(filePath);
+            const image: GeneratedImage = {
+                id,
+                prompt: "(prompt not recorded - pre-existing image)",
+                path: filePath,
+                timestamp: stats.mtime.toISOString(),
+                model: "unknown",
+                type: "generation",
+            };
+            persistentManifest.push(image);
+        }
+    }
+
+    // Save if we added any new entries
+    if (persistentManifest.length > existingIds.size) {
+        await saveManifest(persistentManifest);
+        console.error(
+            `Scanned ${persistentManifest.length - existingIds.size} pre-existing images into manifest`
+        );
+    }
+}
+
+// Initialize manifest on startup
+async function initializeManifest(): Promise<void> {
+    persistentManifest = loadManifest();
+    await scanExistingImages();
+    console.error(
+        `Loaded manifest with ${persistentManifest.length} images`
+    );
 }
 
 // Generate unique filename
@@ -66,6 +151,18 @@ function readImageAsBase64(imagePath: string): string {
     return buffer.toString("base64");
 }
 
+// Find image ID by path (checks both session and persistent history)
+function findImageIdByPath(imagePath: string): string | undefined {
+    const absolutePath = path.resolve(imagePath);
+    // Check session history first
+    const sessionMatch = sessionHistory.find((img) => img.path === absolutePath);
+    if (sessionMatch) return sessionMatch.id;
+    // Check persistent manifest
+    const persistentMatch = persistentManifest.find((img) => img.path === absolutePath);
+    if (persistentMatch) return persistentMatch.id;
+    return undefined;
+}
+
 // Get mime type from file extension
 function getMimeType(filePath: string): string {
     const ext = path.extname(filePath).toLowerCase();
@@ -82,7 +179,7 @@ function getMimeType(filePath: string): string {
 // Initialize MCP server
 const server = new McpServer({
     name: "nanobanana-mcp",
-    version: "1.0.0",
+    version: "1.1.0",
 });
 
 // Tool: Generate image from text prompt
@@ -146,16 +243,20 @@ server.tool(
                         const filename = generateFilename();
                         savedPath = saveImage(part.inlineData.data, filename);
 
-                        // Track in history
+                        // Track in history with full metadata
                         const imageRecord: GeneratedImage = {
-                            id: path.basename(filename, ".png"),
+                            id: extractIdFromFilename(filename),
                             prompt,
                             path: savedPath,
-                            timestamp: new Date(),
+                            timestamp: new Date().toISOString(),
                             model,
+                            aspectRatio,
+                            imageSize,
+                            type: "generation",
                         };
-                        imageHistory.push(imageRecord);
+                        sessionHistory.push(imageRecord);
                         lastGeneratedImage = imageRecord;
+                        await appendToManifest(imageRecord);
                     }
                 }
             }
@@ -171,11 +272,12 @@ server.tool(
                 };
             }
 
+            const imageId = lastGeneratedImage?.id || "unknown";
             return {
                 content: [
                     {
                         type: "text" as const,
-                        text: `Image generated successfully!\n\nSaved to: ${savedPath}\n\nModel: ${model}\nPrompt: ${prompt}${textResponse ? `\n\nModel notes: ${textResponse}` : ""}`,
+                        text: `Image generated successfully!\n\nID: ${imageId}\nSaved to: ${savedPath}\n\nModel: ${model}\nPrompt: ${prompt}${textResponse ? `\n\nModel notes: ${textResponse}` : ""}\n\nUse 'search_history' or 'get_image_by_id' to retrieve this image later.`,
                     },
                 ],
             };
@@ -254,16 +356,23 @@ server.tool(
                         const filename = generateFilename();
                         savedPath = saveImage(part.inlineData.data, filename);
 
-                        // Track in history
+                        // Find parent image ID for lineage tracking
+                        const parentId = findImageIdByPath(imagePath);
+
+                        // Track in history with lineage
                         const imageRecord: GeneratedImage = {
-                            id: path.basename(filename, ".png"),
-                            prompt: `Edit: ${instructions}`,
+                            id: extractIdFromFilename(filename),
+                            prompt: instructions,
                             path: savedPath,
-                            timestamp: new Date(),
+                            timestamp: new Date().toISOString(),
                             model,
+                            type: "edit",
+                            editedFrom: parentId,
+                            sourceImagePath: path.resolve(imagePath),
                         };
-                        imageHistory.push(imageRecord);
+                        sessionHistory.push(imageRecord);
                         lastGeneratedImage = imageRecord;
+                        await appendToManifest(imageRecord);
                     }
                 }
             }
@@ -279,11 +388,12 @@ server.tool(
                 };
             }
 
+            const imageId = lastGeneratedImage?.id || "unknown";
             return {
                 content: [
                     {
                         type: "text" as const,
-                        text: `Image edited successfully!\n\nOriginal: ${imagePath}\nEdited: ${savedPath}\n\nInstructions: ${instructions}${textResponse ? `\n\nModel notes: ${textResponse}` : ""}`,
+                        text: `Image edited successfully!\n\nID: ${imageId}\nOriginal: ${imagePath}\nEdited: ${savedPath}\n\nInstructions: ${instructions}${textResponse ? `\n\nModel notes: ${textResponse}` : ""}`,
                     },
                 ],
             };
@@ -365,16 +475,24 @@ server.tool(
                         const filename = generateFilename();
                         savedPath = saveImage(part.inlineData.data, filename);
 
-                        // Track in history
+                        // Track parent for lineage
+                        const parentId = lastGeneratedImage.id;
+                        const parentPath = lastGeneratedImage.path;
+
+                        // Track in history with lineage
                         const imageRecord: GeneratedImage = {
-                            id: path.basename(filename, ".png"),
-                            prompt: `Continue edit: ${instructions}`,
+                            id: extractIdFromFilename(filename),
+                            prompt: instructions,
                             path: savedPath,
-                            timestamp: new Date(),
+                            timestamp: new Date().toISOString(),
                             model: lastGeneratedImage.model,
+                            type: "continue_edit",
+                            editedFrom: parentId,
+                            sourceImagePath: parentPath,
                         };
-                        imageHistory.push(imageRecord);
+                        sessionHistory.push(imageRecord);
                         lastGeneratedImage = imageRecord;
+                        await appendToManifest(imageRecord);
                     }
                 }
             }
@@ -390,11 +508,12 @@ server.tool(
                 };
             }
 
+            const imageId = lastGeneratedImage?.id || "unknown";
             return {
                 content: [
                     {
                         type: "text" as const,
-                        text: `Image edited successfully!\n\nSaved to: ${savedPath}\n\nInstructions: ${instructions}${textResponse ? `\n\nModel notes: ${textResponse}` : ""}`,
+                        text: `Image edited successfully!\n\nID: ${imageId}\nSaved to: ${savedPath}\n\nInstructions: ${instructions}${textResponse ? `\n\nModel notes: ${textResponse}` : ""}`,
                     },
                 ],
             };
@@ -419,28 +538,239 @@ server.tool(
     "List all images generated in this session",
     {},
     async () => {
-        if (imageHistory.length === 0) {
+        if (sessionHistory.length === 0) {
             return {
                 content: [
                     {
                         type: "text" as const,
-                        text: "No images have been generated in this session yet.",
+                        text: `No images have been generated in this session yet.\n\nPersistent manifest contains ${persistentManifest.length} images from previous sessions. Use 'search_history' to find them.`,
                     },
                 ],
             };
         }
 
-        const historyText = imageHistory
-            .map((img, index) => {
-                return `[${index}] ${img.id}\n    Prompt: ${img.prompt}\n    Path: ${img.path}\n    Model: ${img.model}\n    Time: ${img.timestamp.toISOString()}`;
-            })
-            .join("\n\n");
+        const formatImage = (img: GeneratedImage, index: number): string => {
+            let text = `[${index}] ${img.id}\n    Prompt: ${img.prompt}\n    Path: ${img.path}\n    Model: ${img.model}\n    Time: ${img.timestamp}`;
+            if (img.editedFrom) {
+                text += `\n    Edited from: ${img.editedFrom}`;
+            }
+            if (img.type) {
+                text += `\n    Type: ${img.type}`;
+            }
+            return text;
+        };
+
+        const historyText = sessionHistory.map(formatImage).join("\n\n");
 
         return {
             content: [
                 {
                     type: "text" as const,
-                    text: `Image History (${imageHistory.length} images):\n\n${historyText}\n\nUse history:N in prompts to reference previous images.`,
+                    text: `Session History (${sessionHistory.length} images):\n\n${historyText}\n\nPersistent manifest contains ${persistentManifest.length} total images.\nUse history:N in prompts to reference previous images.`,
+                },
+            ],
+        };
+    }
+);
+
+// Tool: Search persistent history
+server.tool(
+    "search_history",
+    "Search all generated images by prompt text, date range, model, or ID",
+    {
+        query: z.string().optional().describe("Text to search for in prompts (case-insensitive)"),
+        id: z.string().optional().describe("Search for a specific image ID (partial match)"),
+        model: z.string().optional().describe("Filter by model name"),
+        startDate: z.string().optional().describe("Filter images after this date (ISO format, e.g., 2024-12-01)"),
+        endDate: z.string().optional().describe("Filter images before this date (ISO format)"),
+        type: z.enum(["generation", "edit", "continue_edit"]).optional().describe("Filter by image type"),
+        limit: z.number().default(20).describe("Maximum number of results to return"),
+    },
+    async ({ query, id, model, startDate, endDate, type, limit }) => {
+        let results = [...persistentManifest];
+
+        // Filter by query (prompt text)
+        if (query) {
+            const lowerQuery = query.toLowerCase();
+            results = results.filter((img) =>
+                img.prompt.toLowerCase().includes(lowerQuery)
+            );
+        }
+
+        // Filter by ID
+        if (id) {
+            const lowerId = id.toLowerCase();
+            results = results.filter((img) =>
+                img.id.toLowerCase().includes(lowerId)
+            );
+        }
+
+        // Filter by model
+        if (model) {
+            const lowerModel = model.toLowerCase();
+            results = results.filter((img) =>
+                img.model.toLowerCase().includes(lowerModel)
+            );
+        }
+
+        // Filter by date range (with validation)
+        if (startDate) {
+            const start = new Date(startDate);
+            if (isNaN(start.getTime())) {
+                return {
+                    content: [
+                        {
+                            type: "text" as const,
+                            text: `Invalid startDate format: ${startDate}. Please use ISO format (e.g., 2024-12-01).`,
+                        },
+                    ],
+                    isError: true,
+                };
+            }
+            results = results.filter((img) => new Date(img.timestamp) >= start);
+        }
+        if (endDate) {
+            const end = new Date(endDate);
+            if (isNaN(end.getTime())) {
+                return {
+                    content: [
+                        {
+                            type: "text" as const,
+                            text: `Invalid endDate format: ${endDate}. Please use ISO format (e.g., 2024-12-31).`,
+                        },
+                    ],
+                    isError: true,
+                };
+            }
+            results = results.filter((img) => new Date(img.timestamp) <= end);
+        }
+
+        // Filter by type
+        if (type) {
+            results = results.filter((img) => img.type === type);
+        }
+
+        // Sort by timestamp descending (newest first) - ISO strings sort lexicographically
+        results.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+        // Limit results
+        const limited = results.slice(0, limit);
+
+        if (limited.length === 0) {
+            return {
+                content: [
+                    {
+                        type: "text" as const,
+                        text: "No images found matching your search criteria.",
+                    },
+                ],
+            };
+        }
+
+        const formatImage = (img: GeneratedImage): string => {
+            let text = `ID: ${img.id}\n  Prompt: ${img.prompt}\n  Path: ${img.path}\n  Model: ${img.model}\n  Time: ${img.timestamp}`;
+            if (img.editedFrom) {
+                text += `\n  Edited from: ${img.editedFrom}`;
+            }
+            if (img.type) {
+                text += `\n  Type: ${img.type}`;
+            }
+            return text;
+        };
+
+        const resultsText = limited.map(formatImage).join("\n\n");
+
+        return {
+            content: [
+                {
+                    type: "text" as const,
+                    text: `Found ${results.length} images (showing ${limited.length}):\n\n${resultsText}`,
+                },
+            ],
+        };
+    }
+);
+
+// Tool: Get image by ID
+server.tool(
+    "get_image_by_id",
+    "Get full details for a specific image by its ID",
+    {
+        imageId: z.string().describe("The image ID to look up"),
+    },
+    async ({ imageId }) => {
+        const lowerId = imageId.toLowerCase();
+
+        // Search in persistent manifest
+        const image = persistentManifest.find((img) =>
+            img.id.toLowerCase().includes(lowerId)
+        );
+
+        if (!image) {
+            return {
+                content: [
+                    {
+                        type: "text" as const,
+                        text: `No image found with ID containing: ${imageId}`,
+                    },
+                ],
+            };
+        }
+
+        // Check if file still exists
+        const fileExists = fs.existsSync(image.path);
+
+        // Build lineage chain (using Map for O(1) lookups)
+        const lineage: string[] = [];
+        let currentId: string | undefined = image.editedFrom;
+        if (currentId) {
+            const imageMap = new Map(persistentManifest.map((img) => [img.id, img]));
+            while (currentId) {
+                lineage.push(currentId);
+                const parent = imageMap.get(currentId);
+                currentId = parent?.editedFrom;
+            }
+        }
+
+        // Find children (images edited from this one)
+        const children = persistentManifest
+            .filter((img) => img.editedFrom === image.id)
+            .map((img) => img.id);
+
+        let details = `Image Details:
+
+ID: ${image.id}
+Prompt: ${image.prompt}
+Path: ${image.path}
+File exists: ${fileExists ? "Yes" : "No (deleted)"}
+Model: ${image.model}
+Timestamp: ${image.timestamp}
+Type: ${image.type || "unknown"}`;
+
+        if (image.aspectRatio) {
+            details += `\nAspect Ratio: ${image.aspectRatio}`;
+        }
+        if (image.imageSize) {
+            details += `\nImage Size: ${image.imageSize}`;
+        }
+        if (image.editedFrom) {
+            details += `\nEdited from: ${image.editedFrom}`;
+        }
+        if (image.sourceImagePath) {
+            details += `\nSource image: ${image.sourceImagePath}`;
+        }
+        if (lineage.length > 0) {
+            details += `\n\nLineage (ancestors): ${lineage.join(" → ")}`;
+        }
+        if (children.length > 0) {
+            details += `\n\nChildren (edited from this): ${children.join(", ")}`;
+        }
+
+        return {
+            content: [
+                {
+                    type: "text" as const,
+                    text: details,
                 },
             ],
         };
@@ -449,6 +779,9 @@ server.tool(
 
 // Start server
 async function main(): Promise<void> {
+    // Initialize persistent manifest before starting server
+    await initializeManifest();
+
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error("NanoBanana MCP server running on stdio");
