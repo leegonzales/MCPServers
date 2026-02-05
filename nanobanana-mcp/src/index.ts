@@ -46,7 +46,7 @@ function loadManifest(): GeneratedImage[] {
             return JSON.parse(data);
         }
     } catch (error) {
-        console.error("Warning: Could not load manifest:", error);
+        console.warn("Could not load manifest:", error);
     }
     return [];
 }
