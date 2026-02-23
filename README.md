@@ -38,6 +38,11 @@ cp .env.example .env
 
 That's it. The script builds the local servers, registers all MCPs with Claude Code, and tells you what to do next.
 
+**Options:**
+- `--from-env` — Read keys from `.env` instead of prompting
+- `--dry-run` — Show what would be done without doing it
+- `--force` — Overwrite existing server configs (default: preserve existing)
+
 ## Prerequisites
 
 You need API keys for the servers that call external services:

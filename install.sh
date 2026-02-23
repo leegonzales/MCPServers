@@ -9,11 +9,19 @@ set -euo pipefail
 #   ./install.sh                    # Interactive (prompts for keys)
 #   ./install.sh --from-env         # Read keys from .env file
 #   ./install.sh --dry-run          # Show what would be done
+#   ./install.sh --force            # Overwrite existing server configs
 # ─────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DRY_RUN=false
 FROM_ENV=false
+FORCE=false
+
+# Track results for summary
+declare -a INSTALLED=()
+declare -a SKIPPED=()
+declare -a PRESERVED=()
+declare -a UPDATED=()
 
 # Colors
 RED='\033[0;31m'
@@ -32,11 +40,13 @@ for arg in "$@"; do
     case "$arg" in
         --dry-run)  DRY_RUN=true ;;
         --from-env) FROM_ENV=true ;;
+        --force)    FORCE=true ;;
         --help|-h)
-            echo "Usage: ./install.sh [--from-env] [--dry-run]"
+            echo "Usage: ./install.sh [--from-env] [--dry-run] [--force]"
             echo ""
             echo "  --from-env   Read API keys from .env file"
             echo "  --dry-run    Show what would be done without doing it"
+            echo "  --force      Overwrite existing server configs (default: preserve)"
             exit 0
             ;;
     esac
@@ -134,6 +144,76 @@ run() {
     fi
 }
 
+# ── Check if an MCP server is already registered ─────────────
+server_exists() {
+    local name="$1"
+    python3 -c "
+import json, sys
+try:
+    with open('$HOME/.claude.json') as f:
+        data = json.load(f)
+    sys.exit(0 if '$name' in data.get('mcpServers', {}) else 1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null
+}
+
+# ── Safe server registration (won't overwrite without --force) ─
+add_server() {
+    local name="$1"
+    shift
+
+    if $DRY_RUN; then
+        run claude mcp add "$@"
+        INSTALLED+=("$name")
+        return 0
+    fi
+
+    local existed=false
+    server_exists "$name" && existed=true
+
+    if $existed && ! $FORCE; then
+        warn "  $name already registered — skipping (use --force to overwrite)"
+        PRESERVED+=("$name")
+        return 0
+    fi
+
+    if $existed; then
+        claude mcp remove "$name" --scope user 2>/dev/null || true
+    fi
+
+    claude mcp add "$@"
+
+    if $existed; then
+        UPDATED+=("$name")
+    else
+        INSTALLED+=("$name")
+    fi
+}
+
+# ── Write maps-grounding-lite directly to ~/.claude.json ──────
+add_maps_server() {
+    local api_key="$1"
+    if $DRY_RUN; then
+        echo "  [dry-run] Would add maps-grounding-lite (HTTP) to ~/.claude.json"
+        return 0
+    fi
+    python3 -c "
+import json
+config_path = '$HOME/.claude.json'
+with open(config_path, 'r') as f:
+    data = json.load(f)
+servers = data.setdefault('mcpServers', {})
+servers['maps-grounding-lite'] = {
+    'type': 'http',
+    'url': 'https://mapstools.googleapis.com/mcp',
+    'headers': {'X-Goog-Api-Key': '$api_key'}
+}
+with open(config_path, 'w') as f:
+    json.dump(data, f, indent=2)
+"
+}
+
 # ── Build local servers ─────────────────────────────────────
 build_local_servers() {
     log "Building local MCP servers..."
@@ -158,12 +238,13 @@ register_servers() {
     if [[ -f "$SCRIPT_DIR/nanobanana-mcp/dist/index.js" ]] || $DRY_RUN; then
         log "  [1/7] nanobanana-mcp (image generation)"
         if [[ -n "${GOOGLE_API_KEY:-}" ]]; then
-            run claude mcp add nanobanana-mcp \
+            add_server nanobanana-mcp nanobanana-mcp \
                 --scope user \
                 --env GOOGLE_API_KEY="$GOOGLE_API_KEY" \
                 -- node "$SCRIPT_DIR/nanobanana-mcp/dist/index.js"
         else
             warn "  Skipped — no GOOGLE_API_KEY"
+            SKIPPED+=("nanobanana-mcp")
         fi
     fi
 
@@ -171,67 +252,71 @@ register_servers() {
     if [[ -f "$SCRIPT_DIR/veo-mcp/dist/index.js" ]] || $DRY_RUN; then
         log "  [2/7] veo-mcp (video generation)"
         if [[ -n "${GOOGLE_API_KEY:-}" ]]; then
-            run claude mcp add veo-mcp \
+            add_server veo-mcp veo-mcp \
                 --scope user \
                 --env GOOGLE_API_KEY="$GOOGLE_API_KEY" \
                 -- node "$SCRIPT_DIR/veo-mcp/dist/index.js"
         else
             warn "  Skipped — no GOOGLE_API_KEY"
+            SKIPPED+=("veo-mcp")
         fi
     fi
 
     # 3. brave-search (npx)
     log "  [3/7] brave-search (web search)"
     if [[ -n "${BRAVE_API_KEY:-}" ]]; then
-        run claude mcp add brave-search \
+        add_server brave-search brave-search \
             --scope user \
             --env BRAVE_API_KEY="$BRAVE_API_KEY" \
             -- npx -y @brave/brave-search-mcp-server
     else
         warn "  Skipped — no BRAVE_API_KEY"
+        SKIPPED+=("brave-search")
     fi
 
     # 4. chrome-devtools (npx)
     log "  [4/7] chrome-devtools (Chrome control)"
-    run claude mcp add chrome-devtools \
+    add_server chrome-devtools chrome-devtools \
         --scope user \
         -- npx -y chrome-devtools-mcp@latest
 
     # 5. playwright (npx)
     log "  [5/7] playwright (browser automation)"
-    run claude mcp add playwright \
+    add_server playwright playwright \
         --scope user \
         -- npx -y @playwright/mcp
 
     # 6. obsidian (npx)
     log "  [6/7] obsidian (vault access)"
     if [[ -n "${OBSIDIAN_VAULT:-}" ]] && [[ -d "${OBSIDIAN_VAULT}" ]]; then
-        run claude mcp add obsidian \
+        add_server obsidian obsidian \
             --scope user \
             -- npx @mauricio.wolff/mcp-obsidian@latest "$OBSIDIAN_VAULT"
     else
         warn "  Skipped — no vault path or vault not found"
+        SKIPPED+=("obsidian")
     fi
 
-    # 7. maps-grounding-lite (HTTP)
+    # 7. maps-grounding-lite (HTTP — written directly to config)
     log "  [7/7] maps-grounding-lite (Google Maps)"
     if [[ -n "${GOOGLE_MAPS_API_KEY:-}" ]]; then
-        # HTTP-type MCPs can't be added via `claude mcp add` — manual config needed
-        warn "  maps-grounding-lite uses HTTP transport."
-        warn "  Add this to your ~/.claude.json under \"mcpServers\":"
-        echo ""
-        echo "    \"maps-grounding-lite\": {"
-        echo "      \"type\": \"http\","
-        echo "      \"url\": \"https://mapstools.googleapis.com/mcp\","
-        if $DRY_RUN; then
-            echo "      \"headers\": { \"X-Goog-Api-Key\": \"$(mask_secrets "$GOOGLE_MAPS_API_KEY")\" }"
+        if server_exists maps-grounding-lite && ! $FORCE && ! $DRY_RUN; then
+            warn "  maps-grounding-lite already registered — skipping (use --force to overwrite)"
+            PRESERVED+=("maps-grounding-lite")
         else
-            echo "      \"headers\": { \"X-Goog-Api-Key\": \"$GOOGLE_MAPS_API_KEY\" }"
+            local maps_existed=false
+            server_exists maps-grounding-lite && maps_existed=true
+            add_maps_server "$GOOGLE_MAPS_API_KEY"
+            if $maps_existed; then
+                UPDATED+=("maps-grounding-lite")
+            else
+                INSTALLED+=("maps-grounding-lite")
+            fi
+            log "  Added maps-grounding-lite to ~/.claude.json"
         fi
-        echo "    }"
-        echo ""
     else
         warn "  Skipped — no GOOGLE_MAPS_API_KEY"
+        SKIPPED+=("maps-grounding-lite")
     fi
 }
 
@@ -241,14 +326,24 @@ print_summary() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     log "Done! Restart Claude Code to pick up the new servers."
     echo ""
-    info "Installed servers:"
-    [[ -n "${GOOGLE_API_KEY:-}" ]]       && echo "  ✅ nanobanana-mcp"  || echo "  ⏭  nanobanana-mcp (skipped)"
-    [[ -n "${GOOGLE_API_KEY:-}" ]]       && echo "  ✅ veo-mcp"         || echo "  ⏭  veo-mcp (skipped)"
-    [[ -n "${BRAVE_API_KEY:-}" ]]        && echo "  ✅ brave-search"    || echo "  ⏭  brave-search (skipped)"
-    echo "  ✅ chrome-devtools"
-    echo "  ✅ playwright"
-    [[ -n "${OBSIDIAN_VAULT:-}" ]]       && echo "  ✅ obsidian"        || echo "  ⏭  obsidian (skipped)"
-    [[ -n "${GOOGLE_MAPS_API_KEY:-}" ]]  && echo "  ⚙️  maps-grounding-lite (manual config printed above)" || echo "  ⏭  maps-grounding-lite (skipped)"
+
+    if [[ ${#INSTALLED[@]} -gt 0 ]]; then
+        info "Installed:"
+        for s in "${INSTALLED[@]}"; do echo "  ✅ $s"; done
+    fi
+    if [[ ${#UPDATED[@]} -gt 0 ]]; then
+        info "Updated (--force):"
+        for s in "${UPDATED[@]}"; do echo "  🔄 $s"; done
+    fi
+    if [[ ${#PRESERVED[@]} -gt 0 ]]; then
+        info "Preserved (already registered):"
+        for s in "${PRESERVED[@]}"; do echo "  🔒 $s"; done
+    fi
+    if [[ ${#SKIPPED[@]} -gt 0 ]]; then
+        info "Skipped (missing key/path):"
+        for s in "${SKIPPED[@]}"; do echo "  ⏭  $s"; done
+    fi
+
     echo ""
     info "Not included (separate setup):"
     echo "  📂 google-workspace — clone github.com/leegonzales/google-workspace-mcp"
