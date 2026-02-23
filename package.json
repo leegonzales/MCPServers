@@ -4,7 +4,8 @@
   "private": true,
   "description": "Personal collection of MCP servers",
   "workspaces": [
-    "nanobanana-mcp"
+    "nanobanana-mcp",
+    "veo-mcp"
   ],
   "scripts": {
     "build": "npm run build --workspaces",

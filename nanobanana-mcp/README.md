@@ -204,6 +204,23 @@ GEMINI_API_KEY=your-key node dist/index.js
 | "MCP not connected" | Restart Claude Code |
 | "No image generated" | Content policy - try rephrasing prompt |
 
+## Companion Skill: Nano Banana Pro
+
+This MCP server is designed to work with the **Nano Banana Pro** Claude Code skill, which adds smart prompting, iterative editing workflows, and automatic model selection on top of the raw MCP tools.
+
+**What the skill adds:**
+- Crafted prompt engineering for photorealistic, artistic, and text-heavy images
+- Automatic 4K output with Gemini 3 Pro for maximum quality
+- Iterative editing workflows with conversation history
+- Consistent character generation across multiple images
+
+**Install the skill:**
+```bash
+claude skill add nano-banana
+```
+
+The MCP server handles the Gemini API calls; the skill handles the UX. Use both together for best results.
+
 ## License
 
 MIT
