@@ -4,6 +4,7 @@
   "private": true,
   "description": "Personal collection of MCP servers",
   "workspaces": [
+    "google-workspace-mcp",
     "nanobanana-mcp",
     "veo-mcp"
   ],
