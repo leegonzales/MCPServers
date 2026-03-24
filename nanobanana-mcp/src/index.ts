@@ -27,23 +27,69 @@ const sessionHistory: GeneratedImage[] = []; // Current session only
 let lastGeneratedImage: GeneratedImage | null = null;
 let persistentManifest: GeneratedImage[] = []; // Loaded from disk
 
-// Output directory and manifest
+// Output directory (images go here, may be Dropbox/iCloud synced)
 const OUTPUT_DIR = path.join(os.homedir(), "Documents", "nanobanana_generated");
-const MANIFEST_PATH = path.join(OUTPUT_DIR, "manifest.json");
+// Manifest lives outside the synced folder to avoid Dropbox/iCloud EAGAIN locks
+const CACHE_DIR = path.join(os.homedir(), ".cache", "nanobanana-mcp");
+const MANIFEST_PATH = path.join(CACHE_DIR, "manifest.json");
+// Legacy manifest path (for one-time migration)
+const LEGACY_MANIFEST_PATH = path.join(OUTPUT_DIR, "manifest.json");
 
-// Ensure output directory exists
+// Retry helper for Dropbox/iCloud EAGAIN errors
+async function retryIO<T>(fn: () => T | Promise<T>, label: string, maxRetries = 5): Promise<T> {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+            return await fn();
+        } catch (err: any) {
+            const isRetryable = err?.code === "EAGAIN" || err?.errno === -11 ||
+                (err?.message && err.message.includes("Unknown system error -11"));
+            if (isRetryable && attempt < maxRetries) {
+                const delay = 200 * Math.pow(2, attempt);
+                console.warn(`[${label}] EAGAIN retry ${attempt + 1}/${maxRetries}, waiting ${delay}ms`);
+                await new Promise((r) => setTimeout(r, delay));
+                continue;
+            }
+            throw err;
+        }
+    }
+    throw new Error(`[${label}] unreachable`);
+}
+
+// Ensure output and cache directories exist
 function ensureOutputDir(): void {
     if (!fs.existsSync(OUTPUT_DIR)) {
         fs.mkdirSync(OUTPUT_DIR, { recursive: true });
     }
+    if (!fs.existsSync(CACHE_DIR)) {
+        fs.mkdirSync(CACHE_DIR, { recursive: true });
+    }
 }
 
-// Load manifest from disk
-function loadManifest(): GeneratedImage[] {
+// Load manifest from disk (with one-time migration from legacy location)
+async function loadManifest(): Promise<GeneratedImage[]> {
+    ensureOutputDir();
     try {
+        // If manifest exists in new cache location, use it
         if (fs.existsSync(MANIFEST_PATH)) {
-            const data = fs.readFileSync(MANIFEST_PATH, "utf-8");
+            const data = await fs.promises.readFile(MANIFEST_PATH, "utf-8");
             return JSON.parse(data);
+        }
+        // One-time migration: copy from legacy Dropbox-synced location
+        if (fs.existsSync(LEGACY_MANIFEST_PATH)) {
+            console.error("Migrating manifest from Dropbox-synced location to ~/.cache/nanobanana-mcp/");
+            const data = await retryIO(
+                () => fs.promises.readFile(LEGACY_MANIFEST_PATH, "utf-8"),
+                "loadManifest:migrate"
+            );
+            const manifest = JSON.parse(data);
+            await fs.promises.writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
+            // Remove legacy file so Dropbox stops syncing it
+            await retryIO(
+                () => fs.promises.unlink(LEGACY_MANIFEST_PATH),
+                "loadManifest:removeLegacy"
+            ).catch(() => {}); // Best-effort removal
+            console.error("Migration complete");
+            return manifest;
         }
     } catch (error) {
         console.warn("Could not load manifest:", error);
@@ -54,7 +100,10 @@ function loadManifest(): GeneratedImage[] {
 // Save entire manifest to disk
 async function saveManifest(manifest: GeneratedImage[]): Promise<void> {
     ensureOutputDir();
-    await fs.promises.writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
+    await retryIO(
+        () => fs.promises.writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2)),
+        "saveManifest"
+    );
 }
 
 // Append a single image to the manifest
@@ -73,7 +122,10 @@ async function scanExistingImages(): Promise<void> {
     ensureOutputDir();
     const existingIds = new Set(persistentManifest.map((img) => img.id));
 
-    const files = fs.readdirSync(OUTPUT_DIR);
+    const files = await retryIO(
+        () => fs.promises.readdir(OUTPUT_DIR),
+        "scanExistingImages:readdir"
+    );
     const imageFiles = files.filter((f) =>
         [".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(
             path.extname(f).toLowerCase()
@@ -83,18 +135,25 @@ async function scanExistingImages(): Promise<void> {
     for (const file of imageFiles) {
         const id = extractIdFromFilename(file);
         if (!existingIds.has(id)) {
-            // Create a basic entry for untracked images
             const filePath = path.join(OUTPUT_DIR, file);
-            const stats = fs.statSync(filePath);
-            const image: GeneratedImage = {
-                id,
-                prompt: "(prompt not recorded - pre-existing image)",
-                path: filePath,
-                timestamp: stats.mtime.toISOString(),
-                model: "unknown",
-                type: "generation",
-            };
-            persistentManifest.push(image);
+            try {
+                const stats = await retryIO(
+                    () => fs.promises.stat(filePath),
+                    `scanExistingImages:stat(${file})`
+                );
+                const image: GeneratedImage = {
+                    id,
+                    prompt: "(prompt not recorded - pre-existing image)",
+                    path: filePath,
+                    timestamp: stats.mtime.toISOString(),
+                    model: "unknown",
+                    type: "generation",
+                };
+                persistentManifest.push(image);
+            } catch {
+                // Skip files we can't stat (e.g. Dropbox placeholder)
+                continue;
+            }
         }
     }
 
@@ -109,7 +168,7 @@ async function scanExistingImages(): Promise<void> {
 
 // Initialize manifest on startup
 async function initializeManifest(): Promise<void> {
-    persistentManifest = loadManifest();
+    persistentManifest = await loadManifest();
     await scanExistingImages();
     console.error(
         `Loaded manifest with ${persistentManifest.length} images`
@@ -133,21 +192,24 @@ function getGeminiClient(): GoogleGenAI {
 }
 
 // Save image from base64
-function saveImage(base64Data: string, filename: string): string {
+async function saveImage(base64Data: string, filename: string): Promise<string> {
     ensureOutputDir();
     const filePath = path.join(OUTPUT_DIR, filename);
     const buffer = Buffer.from(base64Data, "base64");
-    fs.writeFileSync(filePath, buffer);
+    await retryIO(() => fs.promises.writeFile(filePath, buffer), "saveImage");
     return filePath;
 }
 
 // Read image as base64
-function readImageAsBase64(imagePath: string): string {
+async function readImageAsBase64(imagePath: string): Promise<string> {
     const absolutePath = path.resolve(imagePath);
     if (!fs.existsSync(absolutePath)) {
         throw new Error(`Image file not found: ${absolutePath}`);
     }
-    const buffer = fs.readFileSync(absolutePath);
+    const buffer = await retryIO(
+        () => fs.promises.readFile(absolutePath),
+        "readImageAsBase64"
+    );
     return buffer.toString("base64");
 }
 
@@ -241,7 +303,7 @@ server.tool(
                     }
                     if ("inlineData" in part && part.inlineData?.data) {
                         const filename = generateFilename();
-                        savedPath = saveImage(part.inlineData.data, filename);
+                        savedPath = await saveImage(part.inlineData.data, filename);
 
                         // Track in history with full metadata
                         const imageRecord: GeneratedImage = {
@@ -317,7 +379,7 @@ server.tool(
             const ai = getGeminiClient();
 
             // Read the source image
-            const imageBase64 = readImageAsBase64(imagePath);
+            const imageBase64 = await readImageAsBase64(imagePath);
             const mimeType = getMimeType(imagePath);
 
             const response = await ai.models.generateContent({
@@ -354,7 +416,7 @@ server.tool(
                     }
                     if ("inlineData" in part && part.inlineData?.data) {
                         const filename = generateFilename();
-                        savedPath = saveImage(part.inlineData.data, filename);
+                        savedPath = await saveImage(part.inlineData.data, filename);
 
                         // Find parent image ID for lineage tracking
                         const parentId = findImageIdByPath(imagePath);
@@ -436,7 +498,7 @@ server.tool(
             const ai = getGeminiClient();
 
             // Read the last generated image
-            const imageBase64 = readImageAsBase64(lastGeneratedImage.path);
+            const imageBase64 = await readImageAsBase64(lastGeneratedImage.path);
             const mimeType = getMimeType(lastGeneratedImage.path);
 
             const response = await ai.models.generateContent({
@@ -473,7 +535,7 @@ server.tool(
                     }
                     if ("inlineData" in part && part.inlineData?.data) {
                         const filename = generateFilename();
-                        savedPath = saveImage(part.inlineData.data, filename);
+                        savedPath = await saveImage(part.inlineData.data, filename);
 
                         // Track parent for lineage
                         const parentId = lastGeneratedImage.id;
