@@ -56,13 +56,13 @@ Add to `~/.claude.json` or `~/.claude/settings.json`:
     "google-workspace": {
       "command": "node",
       "args": [
-        "/Users/leegonzales/Projects/leegonzales/google-workspace-mcp/workspace-server/dist/index.js"
+        "~/Projects/leegonzales/google-workspace-mcp/workspace-server/dist/index.js"
       ]
     },
     "google-workspace-personal": {
       "command": "node",
       "args": [
-        "/Users/leegonzales/Projects/leegonzales/google-workspace-mcp/workspace-server/dist/index.js"
+        "~/Projects/leegonzales/google-workspace-mcp/workspace-server/dist/index.js"
       ],
       "env": { "WORKSPACE_PROFILE": "personal" }
     }

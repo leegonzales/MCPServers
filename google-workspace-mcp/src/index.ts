@@ -34,7 +34,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 
 // Resolve the fork's built server
-const FORK_REPO = path.join(
+const FORK_REPO = process.env["GOOGLE_WORKSPACE_FORK_PATH"] || path.join(
     os.homedir(),
     "Projects",
     "leegonzales",
@@ -57,21 +57,18 @@ function main(): void {
         console.error("  2. Build it:");
         console.error(`     cd ${FORK_REPO} && npm install && npm run build`);
         console.error("");
+        console.error("Or set GOOGLE_WORKSPACE_FORK_PATH to a custom location.");
         console.error("Then restart Claude Code.");
         process.exit(1);
     }
 
-    // Merge env — pass through WORKSPACE_PROFILE and any other vars
-    const env: Record<string, string> = {
-        ...process.env as Record<string, string>,
-    };
-
     if (profile) {
-        env["WORKSPACE_PROFILE"] = profile;
         console.error(`[google-workspace-mcp] Starting with profile: ${profile}`);
     } else {
         console.error("[google-workspace-mcp] Starting with default profile");
     }
+
+    const env = { ...process.env };
 
     // Delegate to the fork's server, inheriting stdio for MCP transport
     const child = spawn("node", [SERVER_ENTRY, ...args], {
