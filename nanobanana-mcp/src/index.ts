@@ -27,8 +27,9 @@ const sessionHistory: GeneratedImage[] = []; // Current session only
 let lastGeneratedImage: GeneratedImage | null = null;
 let persistentManifest: GeneratedImage[] = []; // Loaded from disk
 
-// Output directory (images go here, may be Dropbox/iCloud synced)
-const OUTPUT_DIR = path.join(os.homedir(), "Documents", "nanobanana_generated");
+// Output directory — use env override or default to ~/.local/share/nanobanana
+const OUTPUT_DIR = process.env.NANOBANANA_OUTPUT_DIR
+  || path.join(os.homedir(), ".local", "share", "nanobanana");
 // Manifest lives outside the synced folder to avoid Dropbox/iCloud EAGAIN locks
 const CACHE_DIR = path.join(os.homedir(), ".cache", "nanobanana-mcp");
 const MANIFEST_PATH = path.join(CACHE_DIR, "manifest.json");
