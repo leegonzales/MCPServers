@@ -3,6 +3,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { GoogleGenAI, Modality } from "@google/genai";
+import type { GenerateContentConfig, ImageConfig } from "@google/genai";
 import { z } from "zod";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -275,11 +276,13 @@ server.tool(
         try {
             const ai = getGeminiClient();
 
-            const config: Record<string, unknown> = {
+            // Typed so a wrong field name fails the build. An untyped Record let
+            // `imageGenerationConfig` through, and the SDK ignored it silently.
+            const config: GenerateContentConfig = {
                 responseModalities: [Modality.TEXT, Modality.IMAGE],
             };
 
-            const imageConfig: Record<string, string> = {};
+            const imageConfig: ImageConfig = {};
             if (aspectRatio) {
                 imageConfig.aspectRatio = aspectRatio;
             }
@@ -287,7 +290,7 @@ server.tool(
                 imageConfig.imageSize = imageSize;
             }
             if (Object.keys(imageConfig).length > 0) {
-                config.imageGenerationConfig = imageConfig;
+                config.imageConfig = imageConfig;
             }
 
             const response = await ai.models.generateContent({
